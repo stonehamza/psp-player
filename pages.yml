@@ -1,0 +1,162 @@
+name: Build WASM and publish Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-publish
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build PPSSPP Web
+    runs-on: ubuntu-latest
+    container:
+      image: emscripten/emsdk:6.0.12
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Restore folder layout (files were uploaded flat)
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, shutil, json
+          M = {
+          "CREDITS.md": "wasm-page/public/images/CREDITS.md",
+          "Caddyfile": "deploy/relay/Caddyfile",
+          "Dockerfile": "server/Dockerfile",
+          "Dockerfile.dockerignore": "server/Dockerfile.dockerignore",
+          "LICENSE.TXT": "LICENSE.TXT",
+          "Makefile": "Makefile",
+          "README.md": "README.md",
+          "adhoc-test.html": "wasm-page/public/adhoc-test.html",
+          "adhoc-transport.js": "wasm-page/public/adhoc-transport.js",
+          "adhoc-transport.test.mjs": "wasm-page/tests/adhoc-transport.test.mjs",
+          "angular.json": "wasm-page/angular.json",
+          "app.html": "wasm-page/src/app/app.html",
+          "app.ts": "wasm-page/src/app/app.ts",
+          "assets-manifest.txt": "wasm-page/public/assets-manifest.txt",
+          "browser-stability.md": "docs/browser-stability.md",
+          "build-ffmpeg-wasm.sh": "scripts/build-ffmpeg-wasm.sh",
+          "ci-game-launch-investigation.md": "docs/ci-game-launch-investigation.md",
+          "compose.yml": "deploy/relay/compose.yml",
+          "deploy.sh": "deploy/relay/deploy.sh",
+          "docker-compose.yml": "docker-compose.yml",
+          "ffmpeg-smoke.c": "wasm-page/tests/ffmpeg-smoke.c",
+          "god-of-war-performance.md": "docs/god-of-war-performance.md",
+          "icon-192-maskable.png": "wasm-page/public/icons/icon-192-maskable.png",
+          "icon-192.png": "wasm-page/public/icons/icon-192.png",
+          "icon-512-maskable.png": "wasm-page/public/icons/icon-512-maskable.png",
+          "icon-512.png": "wasm-page/public/icons/icon-512.png",
+          "icon-512.svg": "wasm-page/public/icons/icon-512.svg",
+          "index.html": "wasm-page/src/index.html",
+          "main.ts": "wasm-page/src/main.ts",
+          "manifest.webmanifest": "wasm-page/public/manifest.webmanifest",
+          "multiplayer-validation.md": "docs/multiplayer-validation.md",
+          "multiplayer.md": "docs/multiplayer.md",
+          "network-invites.ts": "wasm-page/src/app/network-invites.ts",
+          "package-lock.json": "wasm-page/package-lock.json",
+          "package.json": "wasm-page/package.json",
+          "ppsspp-icon.png": "wasm-page/public/images/ppsspp-icon.png",
+          "ppsspp-runtime.js": "wasm-page/public/ppsspp-runtime.js",
+          "ppsspp-runtime.ts": "wasm-page/src/app/ppsspp-runtime.ts",
+          "ppsspp-wasm-adhoc.patch": "patches/ppsspp-wasm-adhoc.patch",
+          "profile-browser.mjs": "scripts/profile-browser.mjs",
+          "psp-3000.webp": "wasm-page/public/images/psp-3000.webp",
+          "relay-deployment.md": "docs/relay-deployment.md",
+          "relay.Dockerfile": "server/relay.Dockerfile",
+          "relay.Dockerfile.dockerignore": "server/relay.Dockerfile.dockerignore",
+          "relay.py": "server/relay.py",
+          "relay_admin.py": "server/relay_admin.py",
+          "relay_auth.py": "server/relay_auth.py",
+          "runtime.test.mjs": "wasm-page/tests/runtime.test.mjs",
+          "screenshot-mobile.png": "wasm-page/public/icons/screenshot-mobile.png",
+          "screenshot-wide.png": "wasm-page/public/icons/screenshot-wide.png",
+          "serve.py": "server/serve.py",
+          "styles.css": "wasm-page/src/styles.css",
+          "sw.js": "wasm-page/public/sw.js",
+          "test-ffmpeg-wasm.sh": "scripts/test-ffmpeg-wasm.sh",
+          "test-multiplayer-browser.mjs": "scripts/test-multiplayer-browser.mjs",
+          "test-network-invites-browser.mjs": "scripts/test-network-invites-browser.mjs",
+          "test-wasm-uniform-cache.cpp": "scripts/test-wasm-uniform-cache.cpp",
+          "test_relay.py": "server/tests/test_relay.py",
+          "test_relay_auth.py": "server/tests/test_relay_auth.py",
+          "tsconfig.app.json": "wasm-page/tsconfig.app.json",
+          "tsconfig.json": "wasm-page/tsconfig.json",
+          "write-build-info.py": "scripts/write-build-info.py",
+          }
+          for name, dest in M.items():
+              if os.path.exists(dest):
+                  continue
+              if os.path.isfile(name):
+                  os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+                  shutil.copyfile(name, dest)
+          for need in ("wasm-page/package.json", "wasm-page/public/ppsspp-runtime.js", "Makefile"):
+              if not os.path.isfile(need):
+                  raise SystemExit("Missing required file: " + need)
+          open("wasm-page/public/.nojekyll", "a").close()
+          open(".emscripten-version", "w").write("6.0.12\n")
+          PY
+
+      - name: Fetch PPSSPP WASM core
+        shell: bash
+        run: |
+          git config --global --add safe.directory '*'
+          rm -rf deps/ppsspp-wasm
+          mkdir -p deps
+          git clone --depth 1 --branch wasm https://github.com/root-hunter/ppsspp-wasm.git deps/ppsspp-wasm
+          git -C deps/ppsspp-wasm submodule update --init --recursive --depth 1 || true
+          echo "Core revision $(git -C deps/ppsspp-wasm rev-parse HEAD)"
+
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ninja-build ca-certificates python3
+
+      - name: Build release core
+        run: make wasm-release CMAKE=/usr/bin/cmake WASM_JOBS="-j$(nproc)"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24.22.0'
+          cache: npm
+          cache-dependency-path: wasm-page/package-lock.json
+
+      - name: Install Angular dependencies
+        run: npm --prefix wasm-page ci
+
+      - name: Build static Pages artifact
+        run: make app-build-pages
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: wasm-page/dist/ppsspp-web
+
+  deploy:
+    name: Deploy GitHub Pages
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v5
